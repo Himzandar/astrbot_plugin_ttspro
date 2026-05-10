@@ -115,7 +115,7 @@ class TTSPlugin(Star):
             except Exception:
                 continue
             # 目前仅在 aiocqhttp 平台启用 QQ 语音中转功能，因为其他平台的适配复杂度较高，且主要受众是使用 aiocqhttp 的用户群体，同时也避免了在不支持的
-            #平台上出现意外行为。未来如果有更多平台需要支持，可以考虑扩展此处的逻辑。
+            # 平台上出现意外行为。未来如果有更多平台需要支持，可以考虑扩展此处的逻辑。
             if getattr(meta, "name", "") != "aiocqhttp":
                 continue
             bot = getattr(platform, "bot", None)
@@ -146,7 +146,7 @@ class TTSPlugin(Star):
 
             with open(raw_path, "rb") as file_obj:
                 probe_head = file_obj.read(16)
-            # Some providers may return an error marker instead of binary audio.
+            # 相同的错误标记在不同提供商的语音中转中可能会有不同的表现形式，但通常包含 "INVALID" 这样的关键词，因此通过检查文件头部是否包含该关键词来初步判断下载的内容是否有效。如果检测到无效标记，则抛出异常以触发后续的备用处理逻辑。
             if probe_head.startswith(b"INVALID"):
                 raise ValueError("relay audio payload is INVALID")
 
@@ -200,24 +200,28 @@ class TTSPlugin(Star):
         if len(result.chain) != 1:
             return False
         first = result.chain[0]
+        # 目前仅处理纯文本消息链，如果消息链中包含非纯文本组件（如图片、表情等），则不进行语音转换，以避免不必要的复杂性和潜在的错误。
         if not isinstance(first, Plain):
             return False
+        # 如果消息文本长度超过配置的阈值，则不处理，避免将过长的文本转换为语音导致性能问题或不必要的资源消耗。
         if len(first.text) >= self.cfg.threshold:
             return False
 
         is_llm_result = result.is_llm_result()
+        # 如果配置了 only_llm_result 且当前结果不是 LLM 结果，则不处理。
+        if self.cfg.only_llm_result and not is_llm_result:
+            return False
+        # 强制触发的用户 ID 优先级最高，如果发送者 ID 在配置的强制触发列表中，则直接处理。
         sender_id = str(event.get_sender_id() or "")
         if sender_id and sender_id in self.cfg.force_tts_user_ids:
             return True
-
+        # 如果配置了 LLM 关键词触发且当前结果是 LLM 结果，则检查消息文本中是否包含任意一个关键词，如果包含则处理。
         incoming_text = (getattr(event, "message_str", "") or "").strip()
         if is_llm_result and incoming_text:
             for keyword in self.cfg.llm_keyword_triggers:
                 if keyword in incoming_text:
                     return True
 
-        if self.cfg.only_llm_result and not is_llm_result:
-            return False
         return random.random() < self.cfg.prob
 
     @filter.on_decorating_result(priority=15)
