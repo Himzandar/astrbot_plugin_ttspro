@@ -102,8 +102,12 @@
     },
     "llm_keyword_triggers": {
         "description": "LLM 语音触发关键词",
-        "hint": "当用户输入包含这些关键词，且本次回复由 LLM 生成时，跳过概率判定直接发送语音。可用逗号或换行分隔",
-        "type": "string",
-        "default": ""
+        "hint": "当用户输入包含这些关键词，且本次回复由 LLM 生成时，跳过概率判定直接发送语音",
+        "type": "list",
+        "items": {
+            "type": "string",
+            "description": "关键词"
+        },
+        "default": []
     }
 }
