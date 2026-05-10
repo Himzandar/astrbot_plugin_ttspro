@@ -93,5 +93,17 @@
             "step": 0.01
         },
         "default": 0.1
+    },
+    "force_tts_user_ids": {
+        "description": "强制发送语音的用户 ID",
+        "hint": "命中这些用户 ID 时，跳过概率判定，直接将符合条件的回复转为语音。可用逗号或换行分隔",
+        "type": "string",
+        "default": ""
+    },
+    "llm_keyword_triggers": {
+        "description": "LLM 语音触发关键词",
+        "hint": "当用户输入包含这些关键词，且本次回复由 LLM 生成时，跳过概率判定直接发送语音。可用逗号或换行分隔",
+        "type": "string",
+        "default": ""
     }
 }
