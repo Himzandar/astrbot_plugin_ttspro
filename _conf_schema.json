@@ -1,0 +1,97 @@
+{
+    "only_llm_result": {
+        "description": "仅作用于 LLM 回复",
+        "hint": "开启后，仅对 LLM 回复执行文转语音。默认行为与原输出增强插件保持一致",
+        "type": "bool",
+        "default": true
+    },
+    "tts_provider_id": {
+        "description": "可选 TTS 模型",
+        "type": "string",
+        "_special": "select_provider_tts",
+        "hint": "留空表示不启用模型，改走 QQ 声聊中转；选择后优先使用该 TTS Provider 生成语音",
+        "default": ""
+    },
+    "group_id": {
+        "description": "中转群群号",
+        "hint": "使用 QQ 声聊中转时填写。模型 TTS 模式下可留空",
+        "type": "string",
+        "default": ""
+    },
+    "character_id": {
+        "description": "默认 AI 语音角色",
+        "hint": "在 QQ 声聊中转模式下，将文本转为语音时使用该角色",
+        "type": "string",
+        "options": [
+            "lucy-voice-laibixiaoxin",
+            "lucy-voice-houge",
+            "lucy-voice-silang",
+            "lucy-voice-guangdong-f1",
+            "lucy-voice-guangxi-m1",
+            "lucy-voice-daji",
+            "lucy-voice-lizeyan",
+            "lucy-voice-suxinjiejie",
+            "lucy-voice-m8",
+            "lucy-voice-male1",
+            "lucy-voice-male3",
+            "lucy-voice-lvbu",
+            "lucy-voice-xueling",
+            "lucy-voice-f37",
+            "lucy-voice-male2",
+            "lucy-voice-female1",
+            "lucy-voice-m14",
+            "lucy-voice-f38",
+            "lucy-voice-m101",
+            "lucy-voice-female2",
+            "lucy-voice-f36",
+            "lucy-voice-f34"
+        ],
+        "labels": [
+            "小新",
+            "猴哥",
+            "四郎",
+            "东北老妹儿",
+            "广西大表哥",
+            "妲己",
+            "霸道总裁",
+            "酥心御姐",
+            "说书先生",
+            "憨憨小弟",
+            "憨厚老哥",
+            "吕布",
+            "元气少女",
+            "文艺少女",
+            "磁性大叔",
+            "邻家小妹",
+            "低沉男声",
+            "傲娇少女",
+            "爹系男友",
+            "暖心姐姐",
+            "温柔妹妹",
+            "书香少女"
+        ],
+        "default": "lucy-voice-f36"
+    },
+    "threshold": {
+        "description": "文本长度阈值",
+        "hint": "超过此长度的文本不会被转成语音发送",
+        "type": "int",
+        "slider": {
+            "min": 0,
+            "max": 300,
+            "step": 10
+        },
+        "default": 50
+    },
+    "prob": {
+        "description": "触发 TTS 的概率",
+        "hint": "随机值小于该概率时触发 TTS",
+        "type": "float",
+        "slider": {
+            "min": 0,
+            "max": 1,
+            "step": 0.01
+        },
+        "default": 0.1
+    }
+}
