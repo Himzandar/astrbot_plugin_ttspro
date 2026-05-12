@@ -131,6 +131,7 @@ class TTSPlugin(Star):
     ) -> Record:
         """构建适用于特定平台的 Record 对象，使用 QQ 语音中转功能将音频 URL 转换为平台兼容的格式。对于 aiocqhttp 平台，直接使用 URL；对于其他平台，下载并转换音频文件以确保兼容性。"""
         platform_name = str(event.get_platform_name() or "")
+        logger.debug(f"Relay debug: enter _build_relay_record_for_platform platform={platform_name} audio_url={audio_url}")
         if platform_name == "aiocqhttp":
             return Record.fromURL(audio_url)
 
@@ -146,6 +147,11 @@ class TTSPlugin(Star):
 
             with open(raw_path, "rb") as file_obj:
                 probe_head = file_obj.read(16)
+            logger.debug(
+                "Relay debug: downloaded raw_path=%s probe_head=%s",
+                raw_path,
+                probe_head[:16],
+            )
             # 相同的错误标记在不同提供商的语音中转中可能会有不同的表现形式，但通常包含 "INVALID" 这样的关键词，因此通过检查文件头部是否包含该关键词来初步判断下载的内容是否有效。如果检测到无效标记，则抛出异常以触发后续的备用处理逻辑。
             if probe_head.startswith(b"INVALID"):
                 raise ValueError("relay audio payload is INVALID")
@@ -189,7 +195,8 @@ class TTSPlugin(Star):
                 converted_path = await convert_audio_to_wav(normalized_input)
 
             return Record.fromFileSystem(converted_path, text=text, url=converted_path)
-        except Exception:
+        except Exception as e:
+            logger.exception("Relay debug: failed to build relay record for platform")
             return Record.fromURL(audio_url, text=text)
 
     def _should_handle(self, event: AstrMessageEvent) -> bool:
@@ -232,8 +239,15 @@ class TTSPlugin(Star):
 
         result = event.get_result()
         text = result.chain[0].text
+        logger.debug(
+            "TTS debug: handling event platform=%s sender=%s text_snippet=%s",
+            event.get_platform_name(),
+            event.get_sender_id(),
+            (text or "")[:120],
+        )
         try:
             provider = self._get_selected_tts_provider()
+            logger.debug("TTS debug: selected provider=%s", provider)
             if provider:
                 audio = await provider.get_audio(text)
                 result.chain[:] = [self._build_record_from_audio(audio, text)]
@@ -265,5 +279,5 @@ class TTSPlugin(Star):
                     )
                 ]
                 logger.debug(f"已通过QQ中转将文本消息{text[:10]}转化为语音消息")
-        except Exception as exc:
-            logger.warning(str(exc))
+        except Exception:
+            logger.exception("TTS processing failed")
