@@ -104,7 +104,7 @@ class TTSPlugin(Star):
         return f"{text[:limit]}..."
 
     async def _append_voice_tool_context(
-        self, event: AstrMessageEvent, voice_text: str
+        self, event: AstrMessageEvent, voice_text: str, tool_call_id: str
     ) -> None:
         """将语音工具的成功结果追加到当前会话历史中。"""
         context_obj: Any = self.context
@@ -140,10 +140,8 @@ class TTSPlugin(Star):
         history.append(
             {
                 "role": "tool",
-                "Args": (
-                    f"text:{voice_text}"
-                ),
-                "Result": "[TOOL_DIRECT_RETURN] Sent a TTS voice message directly without returning text result.",
+                "content": f"[TOOL_DIRECT_RETURN]{voice_text}",
+                "tool_call_id": tool_call_id
             }
         )
         await context_obj.conversation_manager.update_conversation(
@@ -429,7 +427,7 @@ class TTSPlugin(Star):
         )
 
     @filter.llm_tool(name="send_tts_voice")
-    async def send_tts_voice_tool(self, event: AstrMessageEvent, text: str):
+    async def send_tts_voice_tool(self, event: AstrMessageEvent, text: str,tool_call_id: str):
         """将指定文本直接转换成语音并发送到当前会话。
 
         【优先调用场景】
@@ -451,6 +449,7 @@ class TTSPlugin(Star):
 
         Args:
             text(string): 要转换并发送为语音的文本内容。应直接提供最终要朗读的话，不要包含额外说明。
+            tool_call_id(string): 本次工具调用的唯一 ID，由调用方生成并传入，供工具处理函数使用和记录日志时关联调用上下文。
         """
         if not self.cfg.enable_llm_tool:
             logger.debug("TTS llm_tool debug: tool disabled by config")
@@ -481,7 +480,7 @@ class TTSPlugin(Star):
         try:
             record = await self._generate_record_for_text(voice_text, event)
             await event.send(event.chain_result([record]))
-            await self._append_voice_tool_context(event, voice_text)
+            await self._append_voice_tool_context(event, voice_text, tool_call_id)
             logger.debug("已通过 llm_tool 发送语音，text_snippet=%s", voice_text[:120])
             return None
         except Exception:
