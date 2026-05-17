@@ -139,11 +139,11 @@ class TTSPlugin(Star):
 
         history.append(
             {
-                "role": "assistant",
-                "content": (
-                    "此为调用 llm_tool : send_tts_voice 函数工具的返回结果，并非实际上下文内容，请不要直接使用或展示给用户，仅是告知函数结果。"
-                    f"结果:{voice_text}"
+                "role": "tool",
+                "Args": (
+                    f"text:{voice_text}"
                 ),
+                "Result": "[TOOL_DIRECT_RETURN] Sent a TTS voice message directly without returning text result.",
             }
         )
         await context_obj.conversation_manager.update_conversation(
