@@ -141,7 +141,8 @@ class TTSPlugin(Star):
             {
                 "role": "assistant",
                 "content": (
-                    f"{voice_text}"
+                    "此为调用 llm_tool : send_tts_voice 函数工具的返回结果，并非实际上下文内容，请不要直接使用或展示给用户，仅是告知函数结果。"
+                    f"结果:{voice_text}"
                 ),
             }
         )
