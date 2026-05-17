@@ -141,7 +141,7 @@ class TTSPlugin(Star):
             {
                 "role": "assistant",
                 "content": (
-                    "[TOOL_SUCCESS] 已成功向用户发送语音消息。"
+                    "此为调用send_tts_voice工具的返回 [TOOL_SUCCESS] 已成功向用户发送语音消息。"
                     f"语音内容：{voice_text}。"
                 ),
             }
