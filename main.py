@@ -1,3 +1,4 @@
+import json
 import os
 import random
 import uuid
@@ -80,8 +81,6 @@ class PluginConfig:
 
 
 class TTSPlugin(Star):
-    DIRECT_SEND_TOOL_RESULT_PREFIX = "[TOOL_DIRECT_RETURN]"
-
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.cfg = PluginConfig(config, context)
@@ -103,6 +102,60 @@ class TTSPlugin(Star):
         if len(text) <= limit:
             return text
         return f"{text[:limit]}..."
+
+    async def _append_voice_tool_context(
+        self, event: AstrMessageEvent, voice_text: str
+    ) -> None:
+        """将语音工具的成功结果追加到当前会话历史中。"""
+        context_obj: Any = self.context
+        unified_msg_origin = getattr(event, "unified_msg_origin", "") or ""
+        if not unified_msg_origin:
+            logger.debug("TTS llm_tool debug: skip appending context because unified_msg_origin is empty")
+            return
+
+        conversation_id = await context_obj.conversation_manager.get_curr_conversation_id(
+            unified_msg_origin
+        )
+        if not conversation_id:
+            logger.debug("TTS llm_tool debug: skip appending context because conversation_id is empty")
+            return
+
+        conversation = await context_obj.conversation_manager.get_conversation(
+            unified_msg_origin,
+            conversation_id,
+        )
+        if not conversation:
+            logger.debug(
+                "TTS llm_tool debug: skip appending context because conversation not found conversation_id=%s",
+                conversation_id,
+            )
+            return
+
+        try:
+            history = json.loads(conversation.history or "[]")
+        except Exception:
+            logger.exception("TTS llm_tool debug: failed to parse conversation history")
+            return
+
+        history.append(
+            {
+                "role": "assistant",
+                "content": (
+                    "[TOOL_SUCCESS] 已成功向用户发送语音消息。"
+                    f"语音内容：{voice_text}。"
+                ),
+            }
+        )
+        await context_obj.conversation_manager.update_conversation(
+            unified_msg_origin,
+            conversation_id,
+            history,
+        )
+        logger.debug(
+            "TTS llm_tool debug: appended voice tool context conversation_id=%s text_snippet=%s",
+            conversation_id,
+            self._preview_text(voice_text),
+        )
 
     def _build_record_from_audio(self, audio: str, text: str) -> Record:
         """根据音频输入构建 Record 对象。"""
@@ -429,6 +482,7 @@ class TTSPlugin(Star):
         try:
             record = await self._generate_record_for_text(voice_text, event)
             await event.send(event.chain_result([record]))
+            await self._append_voice_tool_context(event, voice_text)
             logger.debug("已通过 llm_tool 发送语音，text_snippet=%s", voice_text[:120])
             return None
         except Exception:
