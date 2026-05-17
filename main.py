@@ -430,13 +430,7 @@ class TTSPlugin(Star):
             record = await self._generate_record_for_text(voice_text, event)
             await event.send(event.chain_result([record]))
             logger.debug("已通过 llm_tool 发送语音，text_snippet=%s", voice_text[:120])
-            preview = voice_text[:50]
-            if len(voice_text) > 50:
-                preview += "..."
-            return (
-                f"{self.DIRECT_SEND_TOOL_RESULT_PREFIX} {preview}"
-                "Voice message sent successfully to the user. No further reply is needed."
-            )
+            return None
         except Exception:
             logger.exception("LLM TTS tool processing failed")
             return (
