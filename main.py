@@ -449,7 +449,7 @@ class TTSPlugin(Star):
 
         Args:
             text(string): 要转换并发送为语音的文本内容。应直接提供最终要朗读的话，不要包含额外说明。
-            tool_call_id(string): 本次工具调用的唯一 ID，由调用方生成并传入，供工具处理函数使用和记录日志时关联调用上下文。
+            tool_call_id(string): 为llm_response: LLMResponse的llm_response.tools_call_ids 即对应本次调用的唯一 ID，方便后续在上下文中关联和追踪这次工具调用的结果。
         """
         if not self.cfg.enable_llm_tool:
             logger.debug("TTS llm_tool debug: tool disabled by config")
