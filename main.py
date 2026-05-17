@@ -69,20 +69,38 @@ class PluginConfig:
         return bool(self._cfg.get("only_llm_result", True))
 
     @property
+    def enable_llm_tool(self) -> bool:
+        """获取 llm_tool 开关。"""
+        return bool(self._cfg.get("enable_llm_tool", True))
+
+    @property
     def force_tts_user_ids(self) -> list[str]:
         """获取强制触发语音的用户 ID 列表。"""
         return self._normalize_list(self._cfg.get("force_tts_user_ids", []))
-
-    @property
-    def llm_keyword_triggers(self) -> list[str]:
-        """获取触发 LLM 语音的关键词列表。"""
-        return self._normalize_list(self._cfg.get("llm_keyword_triggers", []))
 
 
 class TTSPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.cfg = PluginConfig(config, context)
+        logger.info(
+            "TTS plugin init: enable_llm_tool=%s only_llm_result=%s provider_id=%s group_id=%s character_id=%s threshold=%s prob=%.4f force_user_count=%s",
+            self.cfg.enable_llm_tool,
+            self.cfg.only_llm_result,
+            self.cfg.tts_provider_id or "<empty>",
+            self.cfg.group_id or "<empty>",
+            self.cfg.character_id,
+            self.cfg.threshold,
+            self.cfg.prob,
+            len(self.cfg.force_tts_user_ids),
+        )
+
+    @staticmethod
+    def _preview_text(text: str, limit: int = 80) -> str:
+        text = (text or "").replace("\n", "\\n").strip()
+        if len(text) <= limit:
+            return text
+        return f"{text[:limit]}..."
 
     def _build_record_from_audio(self, audio: str, text: str) -> Record:
         """根据音频输入构建 Record 对象。"""
@@ -122,6 +140,65 @@ class TTSPlugin(Star):
             if bot:
                 return bot
         return None
+
+    async def _generate_record_for_text(
+        self, text: str, event: AstrMessageEvent
+    ) -> Record:
+        """将文本转换为当前平台可发送的语音 Record。"""
+        logger.debug(
+            "TTS debug: generate record platform=%s sender=%s text_len=%s text_snippet=%s",
+            event.get_platform_name(),
+            event.get_sender_id(),
+            len(text or ""),
+            self._preview_text(text),
+        )
+        provider = self._get_selected_tts_provider()
+        logger.debug("TTS debug: selected provider=%s", provider)
+        if provider:
+            logger.debug("TTS debug: using configured provider path provider=%s", provider)
+            audio = await provider.get_audio(text)
+            return self._build_record_from_audio(audio, text)
+
+        if isinstance(event, AiocqhttpMessageEvent):
+            logger.debug(
+                "TTS debug: using aiocqhttp direct path group_id=%s character_id=%s",
+                self.cfg.group_id,
+                self.cfg.character_id,
+            )
+            audio = await event.bot.get_ai_record(
+                character=self.cfg.character_id,
+                group_id=int(self.cfg.group_id),
+                text=text,
+            )
+            return Record.fromURL(audio)
+
+        relay_bot = self._get_qq_relay_bot()
+        if relay_bot and self.cfg.group_id:
+            logger.debug(
+                "TTS debug: using relay bot path group_id=%s character_id=%s platform=%s",
+                self.cfg.group_id,
+                self.cfg.character_id,
+                event.get_platform_name(),
+            )
+            audio = await relay_bot.get_ai_record(
+                character=self.cfg.character_id,
+                group_id=int(self.cfg.group_id),
+                text=text,
+            )
+            return await self._build_relay_record_for_platform(
+                audio_url=audio,
+                event=event,
+                text=text,
+            )
+
+        logger.debug(
+            "TTS debug: no available generation path provider_id=%s group_id=%s has_relay_bot=%s platform=%s",
+            self.cfg.tts_provider_id,
+            self.cfg.group_id,
+            bool(relay_bot),
+            event.get_platform_name(),
+        )
+        raise ValueError("未找到可用的 TTS Provider 或 QQ 语音中转配置")
 
     async def _build_relay_record_for_platform(
         self,
@@ -195,7 +272,7 @@ class TTSPlugin(Star):
                 converted_path = await convert_audio_to_wav(normalized_input)
 
             return Record.fromFileSystem(converted_path, text=text, url=converted_path)
-        except Exception as e:
+        except Exception:
             logger.exception("Relay debug: failed to build relay record for platform")
             return Record.fromURL(audio_url, text=text)
 
@@ -203,33 +280,161 @@ class TTSPlugin(Star):
         """判断是否应该处理当前事件，基于配置的条件进行筛选。只有当事件满足所有条件时，才会返回 True，表示应该处理该事件；否则返回 False，跳过处理。"""
         result = event.get_result()
         if not result or not result.chain:
+            logger.debug("TTS debug: skip decorating because result chain is empty")
             return False
         if len(result.chain) != 1:
+            logger.debug(
+                "TTS debug: skip decorating because chain size is not 1 chain_size=%s",
+                len(result.chain),
+            )
             return False
         first = result.chain[0]
         # 目前仅处理纯文本消息链，如果消息链中包含非纯文本组件（如图片、表情等），则不进行语音转换，以避免不必要的复杂性和潜在的错误。
         if not isinstance(first, Plain):
+            logger.debug(
+                "TTS debug: skip decorating because first component is not Plain type=%s",
+                type(first),
+            )
             return False
         # 如果消息文本长度超过配置的阈值，则不处理，避免将过长的文本转换为语音导致性能问题或不必要的资源消耗。
         if len(first.text) >= self.cfg.threshold:
+            logger.debug(
+                "TTS debug: skip decorating because text is too long text_len=%s threshold=%s text_snippet=%s",
+                len(first.text),
+                self.cfg.threshold,
+                self._preview_text(first.text),
+            )
             return False
 
         is_llm_result = result.is_llm_result()
         # 如果配置了 only_llm_result 且当前结果不是 LLM 结果，则不处理。
         if self.cfg.only_llm_result and not is_llm_result:
+            logger.debug(
+                "TTS debug: skip decorating because result is not llm result and only_llm_result is enabled"
+            )
             return False
         # 强制触发的用户 ID 优先级最高，如果发送者 ID 在配置的强制触发列表中，则直接处理。
         sender_id = str(event.get_sender_id() or "")
         if sender_id and sender_id in self.cfg.force_tts_user_ids:
+            logger.debug(
+                "TTS debug: decorate forced by sender_id=%s text_snippet=%s",
+                sender_id,
+                self._preview_text(first.text),
+            )
             return True
-        # 如果配置了 LLM 关键词触发且当前结果是 LLM 结果，则检查消息文本中是否包含任意一个关键词，如果包含则处理。
-        incoming_text = (getattr(event, "message_str", "") or "").strip()
-        if is_llm_result and incoming_text:
-            for keyword in self.cfg.llm_keyword_triggers:
-                if keyword in incoming_text:
-                    return True
 
-        return random.random() < self.cfg.prob
+        random_value = random.random()
+        should_handle = random_value < self.cfg.prob
+        logger.debug(
+            "TTS debug: decorate probability check random_value=%.4f prob=%.4f should_handle=%s text_snippet=%s",
+            random_value,
+            self.cfg.prob,
+            should_handle,
+            self._preview_text(first.text),
+        )
+        return should_handle
+
+    @filter.on_using_llm_tool()
+    async def on_using_llm_tool(
+        self, event: AstrMessageEvent, tool: Any, tool_args: dict | None
+    ) -> None:
+        tool_name = getattr(tool, "name", "")
+        if tool_name != "send_tts_voice":
+            return
+        args = tool_args or {}
+        logger.info(
+            "TTS llm_tool debug: invoking tool=%s platform=%s sender=%s text_len=%s text_snippet=%s",
+            tool_name,
+            event.get_platform_name(),
+            event.get_sender_id(),
+            len(str(args.get("text", "") or "")),
+            self._preview_text(str(args.get("text", "") or "")),
+        )
+
+    @filter.on_llm_tool_respond()
+    async def on_llm_tool_respond(
+        self,
+        event: AstrMessageEvent,
+        tool: Any,
+        tool_args: dict | None,
+        tool_result: Any,
+    ) -> None:
+        tool_name = getattr(tool, "name", "")
+        if tool_name != "send_tts_voice":
+            return
+        args = tool_args or {}
+        logger.info(
+            "TTS llm_tool debug: tool finished tool=%s platform=%s sender=%s result_type=%s result_preview=%s text_snippet=%s",
+            tool_name,
+            event.get_platform_name(),
+            event.get_sender_id(),
+            type(tool_result).__name__ if tool_result is not None else "NoneType",
+            self._preview_text(str(tool_result), 120) if tool_result is not None else "sent_directly_or_no_result",
+            self._preview_text(str(args.get("text", "") or "")),
+        )
+
+    @filter.llm_tool(name="send_tts_voice")
+    async def send_tts_voice_tool(self, event: AstrMessageEvent, text: str):
+        """将指定文本直接转换成语音并发送到当前会话。
+
+        【优先调用场景】
+        - 用户明确要求你发语音、语音回复、朗读、播报、念一遍、用声音说。
+        - 用户给出一小段话，要求你“帮我读出来”“帮我念成语音”。
+        - 你判断此时用一条短语音回复，比发纯文本更符合用户要求。
+
+        【不要调用的场景】
+        - 普通闲聊、普通答疑、用户没有表达语音诉求时，不要为了显得积极而调用。
+        - 文本太长、内容是多段说明、列表、代码、链接时，不要调用，改用普通文本回复。
+        - 你还没确定最终要说哪一句话时，不要先调用；先整理成一句自然、可直接朗读的口语句子。
+
+        【调用要求】
+        - text 必须直接填写最终要朗读给用户听的话，不要加“以下是语音内容”“帮你转成语音”等说明。
+        - 句子尽量短、口语化、一次说清，避免书面腔和大段文本。
+        - 如果用户只是想听你说一句话，优先直接调用本工具，而不是先输出同样的文字再转语音。
+
+        【目标】
+        更稳定地在“用户要语音/朗读/播报”的场景下直接发出一条自然的语音消息。
+
+        Args:
+            text(string): 要转换并发送为语音的文本内容。应直接提供最终要朗读的话，不要包含额外说明。
+        """
+        if not self.cfg.enable_llm_tool:
+            logger.debug("TTS llm_tool debug: tool disabled by config")
+            return (
+                "[TOOL_UNAVAILABLE] 当前语音工具暂时不可用。"
+                "请直接用自然语气回复用户，不要提工具、配置或指令。"
+            )
+
+        voice_text = (text or "").strip()
+        if not voice_text:
+            logger.debug("TTS llm_tool debug: tool called with empty text")
+            return (
+                "[TOOL_FAILED] 没有拿到要朗读的文本。"
+                "请先整理好一句简短的话，再决定是否调用语音工具。"
+            )
+        if len(voice_text) >= self.cfg.threshold:
+            logger.debug(
+                "TTS llm_tool debug: text too long text_len=%s threshold=%s text_snippet=%s",
+                len(voice_text),
+                self.cfg.threshold,
+                self._preview_text(voice_text),
+            )
+            return (
+                f"[TOOL_FAILED] 要发送的语音文本过长，当前上限为 {self.cfg.threshold} 字。"
+                "请改成更短、更口语化的一句后再试，不要重复硬调工具。"
+            )
+
+        try:
+            record = await self._generate_record_for_text(voice_text, event)
+            await event.send(event.chain_result([record]))
+            logger.debug("已通过 llm_tool 发送语音，text_snippet=%s", voice_text[:120])
+            return None
+        except Exception:
+            logger.exception("LLM TTS tool processing failed")
+            return (
+                "[TOOL_FAILED] 语音发送失败了。"
+                "请直接用自然语言继续回复用户，不要重复调用这个工具。"
+            )
 
     @filter.on_decorating_result(priority=15)
     async def on_decorating_result(self, event: AstrMessageEvent):
@@ -238,7 +443,12 @@ class TTSPlugin(Star):
             return
 
         result = event.get_result()
-        text = result.chain[0].text
+        if not result or not result.chain:
+            return
+        first = result.chain[0]
+        if not isinstance(first, Plain):
+            return
+        text = first.text
         logger.debug(
             "TTS debug: handling event platform=%s sender=%s text_snippet=%s",
             event.get_platform_name(),
@@ -246,38 +456,7 @@ class TTSPlugin(Star):
             (text or "")[:120],
         )
         try:
-            provider = self._get_selected_tts_provider()
-            logger.debug("TTS debug: selected provider=%s", provider)
-            if provider:
-                audio = await provider.get_audio(text)
-                result.chain[:] = [self._build_record_from_audio(audio, text)]
-                logger.debug(f"已使用配置的 TTS 模型将文本消息{text[:10]}转为语音")
-                return
-
-            if isinstance(event, AiocqhttpMessageEvent):
-                audio = await event.bot.get_ai_record(
-                    character=self.cfg.character_id,
-                    group_id=int(self.cfg.group_id),
-                    text=text,
-                )
-                result.chain[:] = [Record.fromURL(audio)]
-                logger.debug(f"已将文本消息{text[:10]}转化为语音消息")
-                return
-
-            relay_bot = self._get_qq_relay_bot()
-            if relay_bot and self.cfg.group_id:
-                audio = await relay_bot.get_ai_record(
-                    character=self.cfg.character_id,
-                    group_id=int(self.cfg.group_id),
-                    text=text,
-                )
-                result.chain[:] = [
-                    await self._build_relay_record_for_platform(
-                        audio_url=audio,
-                        event=event,
-                        text=text,
-                    )
-                ]
-                logger.debug(f"已通过QQ中转将文本消息{text[:10]}转化为语音消息")
+            result.chain[:] = [await self._generate_record_for_text(text, event)]
+            logger.debug(f"已将文本消息{text[:10]}转化为语音消息")
         except Exception:
             logger.exception("TTS processing failed")
