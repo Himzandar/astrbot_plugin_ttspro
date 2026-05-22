@@ -1,4 +1,4 @@
-import json
+import asyncio
 import os
 import random
 import uuid
@@ -80,6 +80,9 @@ class PluginConfig:
 
 
 class TTSPlugin(Star):
+    _RELAY_DOWNLOAD_RETRY_TIMES = 2
+    _RELAY_DOWNLOAD_TIMEOUT_SECONDS = 20
+
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.cfg = PluginConfig(config, context)
@@ -110,6 +113,64 @@ class TTSPlugin(Star):
         if audio.startswith("file:///"):
             return Record(file=audio, url=audio, text=text)
         return Record.fromFileSystem(audio, text=text, url=audio)
+
+    async def _send_plain_fallback(self, event: AstrMessageEvent, text: str) -> bool:
+        """语音发送失败时回退纯文本，避免当前轮次没有任何返回。"""
+        fallback_text = (text or "").strip()
+        if not fallback_text:
+            return False
+        try:
+            await event.send(event.plain_result(fallback_text))
+            logger.info(
+                "TTS fallback: sent plain text fallback platform=%s sender=%s text_snippet=%s",
+                event.get_platform_name(),
+                event.get_sender_id(),
+                self._preview_text(fallback_text),
+            )
+            return True
+        except Exception:
+            logger.exception("TTS fallback: failed to send plain text fallback")
+            return False
+
+    async def _download_relay_audio(self, audio_url: str, raw_path: str) -> None:
+        """下载中转语音，添加超时和重试，避免长时间卡住或留下空文件。"""
+        last_error: Exception | None = None
+        for attempt in range(1, self._RELAY_DOWNLOAD_RETRY_TIMES + 1):
+            try:
+                await asyncio.wait_for(
+                    download_file(audio_url, raw_path),
+                    timeout=self._RELAY_DOWNLOAD_TIMEOUT_SECONDS,
+                )
+                if not os.path.exists(raw_path):
+                    raise FileNotFoundError(raw_path)
+                file_size = os.path.getsize(raw_path)
+                if file_size <= 0:
+                    raise ValueError("relay audio file is empty")
+                logger.debug(
+                    "Relay debug: download succeeded attempt=%s file_size=%s path=%s",
+                    attempt,
+                    file_size,
+                    raw_path,
+                )
+                return
+            except Exception as exc:
+                last_error = exc
+                if os.path.exists(raw_path):
+                    try:
+                        os.remove(raw_path)
+                    except OSError:
+                        logger.warning(
+                            "Relay debug: failed to clean partial relay file path=%s",
+                            raw_path,
+                        )
+                logger.warning(
+                    "Relay debug: download failed attempt=%s/%s url=%s error=%s",
+                    attempt,
+                    self._RELAY_DOWNLOAD_RETRY_TIMES,
+                    audio_url,
+                    exc,
+                )
+        raise RuntimeError(f"relay audio download failed: {audio_url}") from last_error
 
     def _get_selected_tts_provider(self) -> TTSProvider | None:
         """根据配置获取选定的 TTS 提供商实例。如果未配置或找不到提供商，则返回 None。"""
@@ -224,7 +285,7 @@ class TTSPlugin(Star):
             raw_path = os.path.join(
                 temp_dir, f"ttspro_relay_{uuid.uuid4().hex}{suffix}"
             )
-            await download_file(audio_url, raw_path)
+            await self._download_relay_audio(audio_url, raw_path)
 
             with open(raw_path, "rb") as file_obj:
                 probe_head = file_obj.read(16)
@@ -284,7 +345,7 @@ class TTSPlugin(Star):
             return Record.fromFileSystem(converted_path, text=text, url=converted_path)
         except Exception:
             logger.exception("Relay debug: failed to build relay record for platform")
-            return Record.fromURL(audio_url, text=text)
+            raise
 
     def _should_handle(self, event: AstrMessageEvent) -> bool:
         """判断是否应该处理当前事件，基于配置的条件进行筛选。只有当事件满足所有条件时，才会返回 True，表示应该处理该事件；否则返回 False，跳过处理。"""
@@ -445,8 +506,12 @@ class TTSPlugin(Star):
             return f"[TOOL_SUCCESS] 语音已发送，不要做出任何回应。语音内容为：{preview}"
         except Exception:
             logger.exception("LLM TTS tool processing failed")
+            sent_fallback = await self._send_plain_fallback(event, voice_text)
             return (
-                "[TOOL_FAILED] 语音发送失败了。"
+                "[TOOL_FAILED] 语音发送失败了，但已自动回退为文本发送。"
+                "请不要重复调用这个工具，也不要重复输出相同内容。"
+                if sent_fallback
+                else "[TOOL_FAILED] 语音发送失败了。"
                 "请直接用自然语言继续回复用户，不要重复调用这个工具。"
             )
 
@@ -474,3 +539,4 @@ class TTSPlugin(Star):
             logger.debug(f"已将文本消息{text[:10]}转化为语音消息")
         except Exception:
             logger.exception("TTS processing failed")
+            result.chain[:] = [Plain(text)]
