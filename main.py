@@ -50,8 +50,7 @@ class PluginConfig:
     def character_id(self) -> str:
         """获取配置的角色 ID。"""
         return (
-            self._cfg.get("character_id", "lucy-voice-f36")
-            or "lucy-voice-f36"
+            self._cfg.get("character_id", "lucy-voice-f36") or "lucy-voice-f36"
         ).strip()
 
     @property
@@ -156,7 +155,9 @@ class TTSPlugin(Star):
         provider = self._get_selected_tts_provider()
         logger.debug("TTS debug: selected provider=%s", provider)
         if provider:
-            logger.debug("TTS debug: using configured provider path provider=%s", provider)
+            logger.debug(
+                "TTS debug: using configured provider path provider=%s", provider
+            )
             audio = await provider.get_audio(text)
             return self._build_record_from_audio(audio, text)
 
@@ -209,7 +210,9 @@ class TTSPlugin(Star):
     ) -> Record:
         """构建适用于特定平台的 Record 对象，使用 QQ 语音中转功能将音频 URL 转换为平台兼容的格式。对于 aiocqhttp 平台，直接使用 URL；对于其他平台，下载并转换音频文件以确保兼容性。"""
         platform_name = str(event.get_platform_name() or "")
-        logger.debug(f"Relay debug: enter _build_relay_record_for_platform platform={platform_name} audio_url={audio_url}")
+        logger.debug(
+            f"Relay debug: enter _build_relay_record_for_platform platform={platform_name} audio_url={audio_url}"
+        )
         if platform_name == "aiocqhttp":
             return Record.fromURL(audio_url)
 
@@ -248,7 +251,11 @@ class TTSPlugin(Star):
                     raw_bytes = file_obj.read()
                 # Tencent voice payloads may carry a variant SILK header; rewrite
                 # it into the form expected by the converter when needed.
-                if raw_bytes and raw_bytes[0] in (0x02, 0x03) and b"#!SILK" in raw_bytes[:16]:
+                if (
+                    raw_bytes
+                    and raw_bytes[0] in (0x02, 0x03)
+                    and b"#!SILK" in raw_bytes[:16]
+                ):
                     normalized_silk = bytes([0x02]) + raw_bytes[1:]
                     silk_path = str(
                         Path(temp_dir) / f"ttspro_relay_{uuid.uuid4().hex}.silk"
@@ -257,7 +264,9 @@ class TTSPlugin(Star):
                         file_obj.write(normalized_silk)
                     normalized_input = silk_path
 
-                wav_path = os.path.join(temp_dir, f"ttspro_relay_{uuid.uuid4().hex}.wav")
+                wav_path = os.path.join(
+                    temp_dir, f"ttspro_relay_{uuid.uuid4().hex}.wav"
+                )
                 await tencent_silk_to_wav(normalized_input, wav_path)
                 normalized_input = wav_path
             elif is_amr:
@@ -370,7 +379,9 @@ class TTSPlugin(Star):
             event.get_platform_name(),
             event.get_sender_id(),
             type(tool_result).__name__ if tool_result is not None else "NoneType",
-            self._preview_text(str(tool_result), 120) if tool_result is not None else "sent_directly_or_no_result",
+            self._preview_text(str(tool_result), 120)
+            if tool_result is not None
+            else "sent_directly_or_no_result",
             self._preview_text(str(args.get("text", "") or "")),
         )
 
@@ -431,9 +442,7 @@ class TTSPlugin(Star):
             preview = voice_text[:50]
             if len(voice_text) > 50:
                 preview += "..."
-            return (
-                f"[TOOL_SUCCESS] 语音已发送，不要做出任何回应。语音内容为：{preview}"
-            )
+            return f"[TOOL_SUCCESS] 语音已发送，不要做出任何回应。语音内容为：{preview}"
         except Exception:
             logger.exception("LLM TTS tool processing failed")
             return (
