@@ -503,6 +503,7 @@ class TTSPlugin(Star):
             preview = voice_text[:50]
             if len(voice_text) > 50:
                 preview += "..."
+            event.stop_event()
             return f"[TOOL_SUCCESS] 语音已发送，不要做出任何回应。语音内容为：{preview}"
         except Exception:
             logger.exception("LLM TTS tool processing failed")
