@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from aiocqhttp.exceptions import ActionFailed
+
 from astrbot.api import logger
 from astrbot.api.event import filter
 from astrbot.api.star import Context, Star
@@ -80,6 +82,8 @@ class PluginConfig:
 
 
 class TTSPlugin(Star):
+    _AI_RECORD_RETRY_TIMES = 3
+    _AI_RECORD_RETRY_DELAY_SECONDS = 0.8
     _RELAY_DOWNLOAD_RETRY_TIMES = 2
     _RELAY_DOWNLOAD_TIMEOUT_SECONDS = 20
 
@@ -113,6 +117,115 @@ class TTSPlugin(Star):
         if audio.startswith("file:///"):
             return Record(file=audio, url=audio, text=text)
         return Record.fromFileSystem(audio, text=text, url=audio)
+
+    def _get_valid_group_id(self) -> int:
+        """将配置中的群号解析为可用整数，避免运行时偶发因空值或脏值报错。"""
+        raw_group_id = (self.cfg.group_id or "").strip()
+        if not raw_group_id:
+            raise ValueError("未配置 QQ 语音群号 group_id")
+        try:
+            return int(raw_group_id)
+        except ValueError as exc:
+            raise ValueError(f"无效的 QQ 语音群号 group_id: {raw_group_id}") from exc
+
+    def _normalize_ai_record_audio(self, audio: Any) -> str:
+        """标准化 get_ai_record 返回值，兼容偶发的空值或非字符串结构。"""
+        if isinstance(audio, dict):
+            for key in ("url", "file", "data", "voice", "audio"):
+                value = str(audio.get(key, "") or "").strip()
+                if value:
+                    return value
+            raise ValueError(f"QQ AI 语音返回了无效字典: {audio}")
+
+        normalized_audio = str(audio or "").strip()
+        if not normalized_audio:
+            raise ValueError("QQ AI 语音返回为空")
+        return normalized_audio
+
+    async def _request_ai_record(self, bot: Any, text: str, source: str) -> str:
+        """请求 QQ AI 语音，针对上游偶发 ActionFailed 做有限重试。"""
+        group_id = self._get_valid_group_id()
+        last_error: Exception | None = None
+        last_action_failed_result = None
+
+        for attempt in range(1, self._AI_RECORD_RETRY_TIMES + 1):
+            try:
+                audio = await bot.get_ai_record(
+                    character=self.cfg.character_id,
+                    group_id=group_id,
+                    text=text,
+                )
+                normalized_audio = self._normalize_ai_record_audio(audio)
+                if attempt > 1:
+                    logger.info(
+                        "TTS debug: get_ai_record recovered source=%s attempt=%s group_id=%s character_id=%s",
+                        source,
+                        attempt,
+                        group_id,
+                        self.cfg.character_id,
+                    )
+                return normalized_audio
+            except ActionFailed as exc:
+                last_error = exc
+                result = getattr(exc, "result", None)
+                last_action_failed_result = result
+                logger.warning(
+                    "TTS debug: get_ai_record action failed source=%s attempt=%s/%s group_id=%s character_id=%s retcode=%s message=%s wording=%s",
+                    source,
+                    attempt,
+                    self._AI_RECORD_RETRY_TIMES,
+                    group_id,
+                    self.cfg.character_id,
+                    getattr(result, "retcode", None),
+                    getattr(result, "message", ""),
+                    getattr(result, "wording", ""),
+                )
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "TTS debug: get_ai_record unexpected failure source=%s attempt=%s/%s group_id=%s character_id=%s error=%s",
+                    source,
+                    attempt,
+                    self._AI_RECORD_RETRY_TIMES,
+                    group_id,
+                    self.cfg.character_id,
+                    exc,
+                )
+
+            if attempt < self._AI_RECORD_RETRY_TIMES:
+                await asyncio.sleep(self._AI_RECORD_RETRY_DELAY_SECONDS)
+
+        if last_action_failed_result is not None:
+            retcode = getattr(last_action_failed_result, "retcode", None)
+            message = getattr(last_action_failed_result, "message", "")
+            wording = getattr(last_action_failed_result, "wording", "")
+            if retcode == 1200:
+                logger.warning(
+                    "TTS warning: QQ AI voice upstream failed after retries source=%s group_id=%s character_id=%s retcode=%s message=%s wording=%s; this usually indicates QQ voice upstream is busy, rate-limited, or temporarily unavailable rather than a local conversion bug",
+                    source,
+                    group_id,
+                    self.cfg.character_id,
+                    retcode,
+                    message,
+                    wording,
+                )
+            else:
+                logger.warning(
+                    "TTS warning: QQ AI voice request exhausted retries source=%s group_id=%s character_id=%s retcode=%s message=%s wording=%s",
+                    source,
+                    group_id,
+                    self.cfg.character_id,
+                    retcode,
+                    message,
+                    wording,
+                )
+            raise RuntimeError(
+                f"QQ AI 语音生成失败，已重试 {self._AI_RECORD_RETRY_TIMES} 次，retcode={retcode}，message={message or wording or 'unknown'}"
+            ) from last_error
+
+        raise RuntimeError(
+            f"QQ AI 语音生成失败，已重试 {self._AI_RECORD_RETRY_TIMES} 次"
+        ) from last_error
 
     async def _send_plain_fallback(self, event: AstrMessageEvent, text: str) -> bool:
         """语音发送失败时回退纯文本，避免当前轮次没有任何返回。"""
@@ -228,12 +341,11 @@ class TTSPlugin(Star):
                 self.cfg.group_id,
                 self.cfg.character_id,
             )
-            audio = await event.bot.get_ai_record(
-                character=self.cfg.character_id,
-                group_id=int(self.cfg.group_id),
-                text=text,
+            audio = await self._request_ai_record(event.bot, text, source="aiocqhttp")
+            return self._build_record_from_audio(
+                audio,
+                text,
             )
-            return Record.fromURL(audio)
 
         relay_bot = self._get_qq_relay_bot()
         if relay_bot and self.cfg.group_id:
@@ -243,10 +355,10 @@ class TTSPlugin(Star):
                 self.cfg.character_id,
                 event.get_platform_name(),
             )
-            audio = await relay_bot.get_ai_record(
-                character=self.cfg.character_id,
-                group_id=int(self.cfg.group_id),
-                text=text,
+            audio = await self._request_ai_record(
+                relay_bot,
+                text,
+                source=f"relay:{event.get_platform_name()}",
             )
             return await self._build_relay_record_for_platform(
                 audio_url=audio,
