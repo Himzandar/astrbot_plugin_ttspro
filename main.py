@@ -1,6 +1,7 @@
 import asyncio
 import os
 import random
+import re
 import uuid
 from pathlib import Path
 from typing import Any
@@ -142,6 +143,34 @@ class TTSPlugin(Star):
             raise ValueError("QQ AI 语音返回为空")
         return normalized_audio
 
+    @staticmethod
+    def _extract_action_failed_details(result: Any) -> tuple[Any, str, str]:
+        """兼容 aiocqhttp ActionFailed.result 的不同结构。"""
+        if result is None:
+            return None, "", ""
+
+        if isinstance(result, dict):
+            return (
+                result.get("retcode"),
+                str(result.get("message", "") or ""),
+                str(result.get("wording", "") or ""),
+            )
+
+        retcode = getattr(result, "retcode", None)
+        message = str(getattr(result, "message", "") or "")
+        wording = str(getattr(result, "wording", "") or "")
+        if retcode is not None or message or wording:
+            return retcode, message, wording
+
+        result_text = str(result)
+        retcode_match = re.search(r"retcode=(\d+)", result_text)
+        message_match = re.search(r"message='([^']*)'", result_text)
+        wording_match = re.search(r"wording='([^']*)'", result_text)
+        parsed_retcode = int(retcode_match.group(1)) if retcode_match else None
+        parsed_message = message_match.group(1) if message_match else ""
+        parsed_wording = wording_match.group(1) if wording_match else ""
+        return parsed_retcode, parsed_message, parsed_wording
+
     async def _request_ai_record(self, bot: Any, text: str, source: str) -> str:
         """请求 QQ AI 语音，针对上游偶发 ActionFailed 做有限重试。"""
         group_id = self._get_valid_group_id()
@@ -169,6 +198,7 @@ class TTSPlugin(Star):
                 last_error = exc
                 result = getattr(exc, "result", None)
                 last_action_failed_result = result
+                retcode, message, wording = self._extract_action_failed_details(result)
                 logger.warning(
                     "TTS debug: get_ai_record action failed source=%s attempt=%s/%s group_id=%s character_id=%s retcode=%s message=%s wording=%s",
                     source,
@@ -176,9 +206,9 @@ class TTSPlugin(Star):
                     self._AI_RECORD_RETRY_TIMES,
                     group_id,
                     self.cfg.character_id,
-                    getattr(result, "retcode", None),
-                    getattr(result, "message", ""),
-                    getattr(result, "wording", ""),
+                    retcode,
+                    message,
+                    wording,
                 )
             except Exception as exc:
                 last_error = exc
@@ -196,9 +226,9 @@ class TTSPlugin(Star):
                 await asyncio.sleep(self._AI_RECORD_RETRY_DELAY_SECONDS)
 
         if last_action_failed_result is not None:
-            retcode = getattr(last_action_failed_result, "retcode", None)
-            message = getattr(last_action_failed_result, "message", "")
-            wording = getattr(last_action_failed_result, "wording", "")
+            retcode, message, wording = self._extract_action_failed_details(
+                last_action_failed_result
+            )
             if retcode == 1200:
                 logger.warning(
                     "TTS warning: QQ AI voice upstream failed after retries source=%s group_id=%s character_id=%s retcode=%s message=%s wording=%s; this usually indicates QQ voice upstream is busy, rate-limited, or temporarily unavailable rather than a local conversion bug",
